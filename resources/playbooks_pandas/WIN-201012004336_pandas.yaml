@@ -33,12 +33,12 @@ analytics:
               id: 53DE6467-D39D-434B-9EF7-69C7F4098DF9
               event_id: 5140
     logic: |-
-      SELECT `@timestamp`, Hostname, ShareName, SubjectUserName, SubjectLogonId,  AccessMask
-      FROM mordorTable
-      WHERE LOWER(Channel) = 'security'
-          AND (EventID = 5140)
-          AND NOT ShareName LIKE '%IPC$'
-          AND NOT SubjectUserName LIKE '%$'
+      (df
+      [['@timestamp','Hostname','ShareName','SubjectUserName','SubjectLogonId','AccessMask']]
+      [(df['Channel'].str.lower() == 'security') &
+        (df['EventID'] == 5140) &
+        (~(df['ShareName'].str.endswith('IPC$',False))) &
+        (~(df['SubjectUserName'].str.endswith('$',False)))])
   - name: Analytic II
     description: Look for non-system accounts SMB connecting (Tree Connect) to an IPC$ Share and administrative shares (i.e C$) with the same logon session ID.
     data_sources:
@@ -50,21 +50,20 @@ analytics:
               id: 53DE6467-D39D-434B-9EF7-69C7F4098DF9
               event_id: 5140
     logic: |-
-      SELECT `@timestamp`, Hostname, ShareName, SubjectUserName, b.SubjectLogonId, IpAddress, IpPort
-      FROM mordorTable b
-      INNER JOIN (
-          SELECT SubjectLogonId
-          FROM mordorTable
-          WHERE LOWER(Channel) = "security"
-              AND EventID = 5140
-              AND ShareName LIKE '%IPC$'
-              AND NOT SubjectUserName LIKE '%$'
-          ) a
-      ON b.SubjectLogonId = a.SubjectLogonId
-      WHERE LOWER(b.Channel) = 'security'
-          AND b.EventID = 5140
-          AND b.ShareName LIKE '%C$'
-          AND NOT SubjectUserName LIKE '%$'
+      (pd.merge(
+      df
+      [['@timestamp','Hostname','ShareName','SubjectUserName','SubjectLogonId','IpAddress','IpPort']]
+      [(df['Channel'].str.lower() == 'security')&
+        (df['EventID'] == 5140)&
+        (df['ShareName'].str.endswith('C$'))&
+        (~(df['SubjectUserName'].str.endswith('$',False)))],
+      df
+      [['SubjectLogonId']]
+      [(df['Channel'].str.lower() == 'security')&
+        (df['EventID'] == 5140)&
+        (df['ShareName'].str.endswith('IPC$'))&
+        (~(df['SubjectUserName'].str.endswith('$',False)))],
+      on = 'SubjectLogonId', how = 'inner'))
   - name: Analytic III
     description: Look for non-system accounts SMB accessing a file with write (0x2) access mask via administrative share (i.e C$).
     data_sources:
@@ -76,13 +75,13 @@ analytics:
               id: 2A9FC474-29C0-4582-9DA8-1F4197874F8C
               event_id: 5145
     logic: |-
-      SELECT `@timestamp`, Hostname, ShareName, SubjectUserName, SubjectLogonId, IpAddress, IpPort, RelativeTargetName
-      FROM mordorTable
-      WHERE LOWER(Channel) = "security"
-          AND EventID = 5145
-          AND ShareName LIKE '%C$'
-          AND NOT SubjectUserName LIKE '%$'
-          AND AccessMask = '0x2'
+      (df
+      [['@timestamp','Hostname','ShareName','SubjectUserName','SubjectLogonId','IpAddress','IpPort','RelativeTargetName']]
+      [(df['Channel'].str.lower() == 'security') &
+        (df['EventID'] == 5145) &
+        (df['ShareName'].str.endswith('C$',False)) &
+        (~(df['SubjectUserName'].str.endswith('$',False))) &
+        (df['AccessMask'] == '0x2')])
   - name: Analytic IV
     description: Look for non-system accounts SMB connecting (Tree Connect) to an IPC$ Share and administrative shares (i.e C$) and accessing/creating a file with write (0x2) access mask with the same logon session ID.
     data_sources:
@@ -97,29 +96,26 @@ analytics:
               id: 2A9FC474-29C0-4582-9DA8-1F4197874F8C
               event_id: 5145
     logic: |-
-      SELECT `@timestamp`, Hostname, ShareName, SubjectUserName, d.SubjectLogonId, IpAddress, IpPort, RelativeTargetName
-      FROM mordorTable d
-      INNER JOIN (
-          SELECT b.SubjectLogonId
-          FROM mordorTable b
-          INNER JOIN (
-              SELECT SubjectLogonId
-              FROM mordorTable
-              WHERE LOWER(Channel) = "security"
-                  AND EventID = 5140
-                  AND ShareName LIKE '%IPC$'
-                  AND NOT SubjectUserName LIKE '%$'
-          ) a
-          ON b.SubjectLogonId = a.SubjectLogonId
-          WHERE LOWER(b.Channel) = 'security'
-              AND b.EventID = 5140
-              AND b.ShareName LIKE '%C$'
-      ) c
-      ON d.SubjectLogonId = c.SubjectLogonId
-      WHERE LOWER(d.Channel) = 'security'
-          AND d.EventID = 5145
-          AND d.ShareName LIKE '%C$'
-          AND d.AccessMask = '0x2'
+      admShares = (df
+                  [['SubjectLogonId']]
+                  [(df['Channel'].str.lower() == 'security')&
+                    (df['EventID'] == 5140)&
+                    (df['ShareName'].str.endswith('C$'))])
+      ipcShares = (df
+                  [['SubjectLogonId']]
+                  [(df['Channel'].str.lower() == 'security')&
+                    (df['EventID'] == 5140)&
+                    (df['ShareName'].str.endswith('IPC$'))&
+                    (~(df['SubjectUserName'].str.endswith('$',False)))])
+      writeAccess = (df
+                    [['@timestamp','Hostname','ShareName','SubjectUserName','SubjectLogonId','IpAddress','IpPort','RelativeTargetName']]
+                    [(df['Channel'].str.lower() == 'security') &
+                      (df['EventID'] == 5145) &
+                      (df['ShareName'].str.endswith('C$')) &
+                      (df['AccessMask'] == '0x2')])
+      (pd.merge(writeAccess,
+                pd.merge(admShares, ipcShares, on = 'SubjectLogonId', how = 'inner'),
+                on = 'SubjectLogonId', how = 'inner'))
   - name: Analytic V
     description: Look for files that were accessed over the network with write (0x2) access mask via administrative shares (i.e C$) and that were created by the System process on the target system.
     data_sources:
@@ -136,19 +132,20 @@ analytics:
               id: 109A870F-84A2-4CE4-948A-4773CD283F76
               event_id: 11
     logic: |-
-      SELECT `@timestamp`, Hostname, ShareName, SubjectUserName, SubjectLogonId, IpAddress, IpPort, RelativeTargetName
-      FROM mordorTable b
-      INNER JOIN (
-          SELECT LOWER(REVERSE(SPLIT(TargetFilename, '\'))[0]) as TargetFilename
-          FROM mordorTable
-          WHERE Channel = 'Microsoft-Windows-Sysmon/Operational'
-              AND Image = 'System'
-              AND EventID = 11
-      ) a
-      ON LOWER(REVERSE(SPLIT(RelativeTargetName, '\'))[0]) = a.TargetFilename
-      WHERE LOWER(b.Channel) = 'security'
-          AND b.EventID = 5145
-          AND b.AccessMask = '0x2'
+      (pd.merge(
+      df
+      .assign(FilenameJoin = df['TargetFilename'].str.split('\\').str[-1].str.lower())
+      [['FilenameJoin']]
+      [(df['Channel'].str.contains('Sysmon'))&
+        (df['EventID'] == 11)&
+        (df['Image'] == 'System')],
+      df
+      .assign(FilenameJoin = df['RelativeTargetName'].str.split('\\').str[-1].str.lower())
+      [['FilenameJoin','@timestamp','Hostname','ShareName','SubjectUserName','SubjectLogonId','IpAddress','IpPort','RelativeTargetName']]
+      [(df['Channel'].str.lower() == 'security')&
+        (df['EventID'] == 5145)&
+        (df['AccessMask'] == '0x2')],
+      on = 'FilenameJoin', how = 'inner').drop(['FilenameJoin'], axis = 1))
 known_bypasses:
 false_positives:
 additional_notes: |-
